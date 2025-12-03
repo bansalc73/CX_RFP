@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 dotenv.config();
-import Vendor from "../models/Vendor.js";
+import Vendor from "../models/vendor.js";
 
 await mongoose.connect(process.env.MONGO_URI);
 
