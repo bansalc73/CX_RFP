@@ -1,5 +1,3 @@
-import axios from "axios";
-
 export const scoreVendorUsingAI = async (rfp, vendor) => {
   //
   // ⭐ SIMPLE AI SIMULATION (Replace with real LLM API)
