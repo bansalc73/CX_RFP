@@ -84,44 +84,48 @@ Input:
   return out;
 };
 
-/* Simple vendor scoring — quality/qty/lead/price weights */
-export const scoreVendor = async (rfp, vendorResponse) => {
-  // compute metrics
-  let totalQty = 0, totalPrice = 0, leadSum = 0, qualityScores = 0;
-  const items = vendorResponse.items || [];
-  items.forEach(it => {
-    const qty = Number(it.qty_offered || 0);
-    const unitPrice = Number(it.unit_price || 0);
-    const total = Number(it.total_price || (qty * unitPrice || 0));
-    const lead = Number(it.lead_time_days || 999);
-    totalQty += qty;
-    totalPrice += total;
-    leadSum += lead;
-    const qText = (it.quality || "").toLowerCase();
-    let qScore = 50;
-    if (qText.includes("grade a") || qText.includes("a grade") || qText.includes("premium")) qScore = 90;
-    else if (qText.includes("grade b")) qScore = 70;
-    else if (qText.includes("grade c") || qText.includes("low")) qScore = 40;
-    qualityScores += qScore;
+export const llmScoreVendor = async (rfp, vendor) => {
+  const prompt = `
+You are a senior FMCG procurement expert.
+Evaluate this vendor's proposal strictly against this RFP.
+
+--- RFP ---
+${JSON.stringify(rfp, null, 2)}
+
+--- Vendor Proposal ---
+${JSON.stringify(vendor, null, 2)}
+
+Use this score rubric:
+- Quality match to required grade: 40%
+- Quantity fulfillment: 25%
+- Delivery time match: 20%
+- Pricing competitiveness: 10%
+- Payment terms alignment: 5%
+
+Consider trade-offs as a human specialist would.
+Example: If quality is premium → higher cost can still be accepted.
+
+Return ONLY valid JSON:
+
+{
+  "score": <0-100>,
+  "reasons": [
+    "specific reason 1",
+    "specific reason 2"
+  ]
+}
+`;
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini", // update if you use gpt-4o
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.1 // favor consistency
   });
 
-  const avgQuality = items.length ? qualityScores / items.length : 50;
-  const avgLead = items.length ? leadSum / items.length : 999;
+  const content = completion.choices?.[0]?.message?.content?.trim();
 
-  // quantity target = sum of rfp required_qty
-  const targetQty = (rfp.line_items || []).reduce((s,i)=>s + (Number(i.required_qty)||0), 0) || 1;
-  const qtyScore = Math.min(1, totalQty / targetQty) * 30; // up to 30
-  const qualityComponent = (avgQuality/100)*40; // up to 40
-  const leadComponent = avgLead <= 0 ? 0 : Math.max(0, (1 - (avgLead / (rfp.delivery_days || 30))) * 20);
-  let priceComponent = 0;
-  if (rfp.budget?.amount && totalPrice) {
-    priceComponent = totalPrice <= rfp.budget.amount ? 10 : Math.max(0, 10 * (1 - ((totalPrice - rfp.budget.amount)/rfp.budget.amount)));
-  } else {
-    priceComponent = Math.max(0, 10 - (totalPrice/100000)); // small heuristic
-  }
+  const start = content.indexOf("{");
+  const end = content.lastIndexOf("}") + 1;
+  const jsonText = content.slice(start, end);
 
-  const raw = qtyScore + qualityComponent + leadComponent + priceComponent;
-  const maxPossible = 30 + 40 + 20 + 10;
-  const score = Math.round((raw / maxPossible) * 100);
-  return score;
+  return JSON.parse(jsonText);
 };

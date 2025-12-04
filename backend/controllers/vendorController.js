@@ -1,7 +1,7 @@
 import VendorResponse from "../models/VendorResponse.js";
 import Vendor from "../models/Vendor.js";
 import RFP from "../models/RFP.js";
-import { scoreVendor } from "../services/aiService.js";
+import { llmScoreVendor } from "../services/aiService.js";
 
 /* Submit vendor response */
 export const submitVendorResponse = async (req, res) => {
@@ -40,17 +40,29 @@ export const evaluateRFP = async (req, res) => {
     if (!rfp) return res.status(404).json({ error: "RFP not found" });
 
     const responses = await VendorResponse.find({ rfp_id: rfpId }).lean();
+    if (!responses.length) return res.json({ success: true, ranking: [] });
 
-    const scored = await Promise.all(responses.map(async r => {
-      const score = await scoreVendor(rfp, r);
-      return { response: r, score };
-    }));
+    const ranked = await Promise.all(
+      responses.map(async (vendorResp) => {
+        let scoring;
+        try {
+          scoring = await llmScoreVendor(rfp, vendorResp);
+        } catch (err) {
+          scoring = { score: 0, reasons: ["AI scoring failed"] };
+        }
+        return {
+          vendorName: vendorResp.vendor_name,
+          items: vendorResp.items,
+          score: scoring.score,
+          reasons: scoring.reasons
+        };
+      })
+    );
 
-    scored.sort((a,b)=>b.score-a.score);
+    ranked.sort((a, b) => b.score - a.score);
 
-    return res.json({ success: true, ranking: scored });
+    return res.json({ success: true, ranking: ranked });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: err.message });
   }
 };
