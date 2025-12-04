@@ -1,124 +1,127 @@
 import OpenAI from "openai";
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/**
- * Call LLM to extract an RFP JSON from free-text input
- */
+/* Compose simple vendor email (string) */
+export const composeVendorEmail = (rfp, vendor) => {
+  const lines = [];
+  lines.push(`Hello ${vendor.name},`);
+  lines.push("");
+  lines.push(`We are seeking quotations for the following RFP: ${rfp.title || "Procurement Request"}`);
+  lines.push(`Description: ${rfp.description || ""}`);
+  lines.push("");
+  lines.push("Items:");
+  (rfp.line_items || []).forEach(it => {
+    lines.push(`- ${it.name}: qty ${it.required_qty} ${it.unit || 'kg'}, quality: ${it.quality_spec || ''}`);
+  });
+  lines.push("");
+  lines.push(`Budget: ${rfp.budget?.amount || ""} ${rfp.budget?.currency || "INR"}`);
+  lines.push(`Delivery within ${rfp.delivery_days || ""} days`);
+  lines.push(`Payment terms: ${rfp.payment_terms || ""}`);
+  lines.push("");
+  lines.push("Please reply with your quotation (PDF or text) and include unit prices, lead times, and quality certificates.");
+  lines.push("");
+  lines.push("Regards, Procurement Team");
+
+  return lines.join("\n");
+};
+
+/* NLP: extract RFP JSON from free text */
 export const generateRFPFromText = async (text) => {
-  // Prompt instructing model to return JSON in required schema
+  // Prompt instructing model to return JSON schema
   const prompt = `
-You are an extractor. Convert the following procurement request into JSON only.
+You are an extractor for procurement RFPs for raw materials.
+Given the following user request, extract JSON with these fields:
+
+{
+ "title": string,
+ "description": string,
+ "line_items": [
+   { "item_id": string, "name": string, "required_qty": number (optional), "unit": string (optional), "quality_spec": string (optional) }
+ ],
+ "budget_amount": number (optional),
+ "budget_currency": string (optional),
+ "delivery_days": number (optional),
+ "payment_terms": string (optional),
+ "notes": string (optional)
+}
+
+If a numeric value is not present, you may omit it. Return ONLY valid JSON.
 
 Input:
 """${text}"""
-
-Output JSON schema:
-{
-  "title": "string",
-  "description": "string",
-  "line_items": [
-    { "item_id": "string", "name": "string", "required_qty": number, "quality_spec": "string", "notes": "string" }
-  ],
-  "notes": "string"
-}
-
-Return ONLY valid JSON.
 `;
 
-  const resp = await client.chat.completions.create({
-    model: "gpt-4o-mini", // replace with a model available to you
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini", // adjust to a model you have access to
     messages: [{ role: "user", content: prompt }],
-    max_tokens: 700,
     temperature: 0
   });
 
-  const content = resp.choices?.[0]?.message?.content?.trim();
-  if (!content) throw new Error("No response from LLM");
+  const content = completion.choices?.[0]?.message?.content?.trim();
+  if (!content) throw new Error("No output from LLM");
 
-  // try to parse JSON
+  // parse JSON (allow JSON inside extra text)
   let parsed = null;
   try {
     parsed = JSON.parse(content);
-  } catch (err) {
-    // try to extract JSON substring
+  } catch (e) {
     const m = content.match(/(\{[\s\S]*\})/);
     if (m) parsed = JSON.parse(m[1]);
-    else throw new Error("LLM output not JSON");
+    else throw new Error("LLM did not return JSON");
   }
 
-  // Normalize: ensure line_items exists
-  if (!parsed.line_items || !Array.isArray(parsed.line_items)) parsed.line_items = [];
+  // Normalize keys: map budget_* to budget object
+  const out = {
+    title: parsed.title || null,
+    description: parsed.description || null,
+    line_items: parsed.line_items || parsed.items || [],
+    budget: parsed.budget_amount ? { amount: parsed.budget_amount, currency: parsed.budget_currency || "INR" } : null,
+    delivery_days: parsed.delivery_days || parsed.delivery || null,
+    payment_terms: parsed.payment_terms || null,
+    notes: parsed.notes || null
+  };
 
-  return parsed;
+  return out;
 };
 
-/**
- * Simple scoring function (weights can be tuned)
- * Priority: quality (0.4), quantity (0.3), lead time (0.2), price (0.1)
- *
- * vendorResponse: structure may have items[] with qty_offered, quality, lead_time_days, total_price
- */
+/* Simple vendor scoring — quality/qty/lead/price weights */
 export const scoreVendor = async (rfp, vendorResponse) => {
-  // Aggregate vendor metrics
-  // For simplicity assume vendorResponse.items array and rfp.line_items correspond 1:1
-  let totalQty = 0, totalPrice = 0, totalLead = 0, qScores = [];
+  // compute metrics
+  let totalQty = 0, totalPrice = 0, leadSum = 0, qualityScores = 0;
   const items = vendorResponse.items || [];
-
-  for (const it of items) {
+  items.forEach(it => {
     const qty = Number(it.qty_offered || 0);
-    const up = Number(it.unit_price || 0);
-    const tp = Number(it.total_price || (qty * up || 0));
+    const unitPrice = Number(it.unit_price || 0);
+    const total = Number(it.total_price || (qty * unitPrice || 0));
     const lead = Number(it.lead_time_days || 999);
-    const qualText = (it.quality || "").toLowerCase();
-
     totalQty += qty;
-    totalPrice += tp;
-    totalLead += lead;
-
-    // quality mapping (simple heuristics)
+    totalPrice += total;
+    leadSum += lead;
+    const qText = (it.quality || "").toLowerCase();
     let qScore = 50;
-    if (qualText.includes("grade a") || qualText.includes("a grade") || qualText.includes("premium") || qualText.includes("excellent")) qScore = 90;
-    else if (qualText.includes("grade b") || qualText.includes("b grade")) qScore = 70;
-    else if (qualText.includes("grade c") || qualText.includes("low")) qScore = 40;
-    // detect percentage quality like moisture/protein 12%
-    const pctMatch = qualText.match(/(\d+(\.\d+)?)\s*%/);
-    if (pctMatch) {
-      const pct = parseFloat(pctMatch[1]);
-      // scale pct to 0..100 (example heuristic)
-      qScore = Math.min(100, pct * 8);
-    }
-    qScores.push(qScore);
-  }
+    if (qText.includes("grade a") || qText.includes("a grade") || qText.includes("premium")) qScore = 90;
+    else if (qText.includes("grade b")) qScore = 70;
+    else if (qText.includes("grade c") || qText.includes("low")) qScore = 40;
+    qualityScores += qScore;
+  });
 
-  const avgQuality = qScores.length ? (qScores.reduce((a,b)=>a+b,0)/qScores.length) : 50;
-  const avgLead = items.length ? totalLead / items.length : 999;
+  const avgQuality = items.length ? qualityScores / items.length : 50;
+  const avgLead = items.length ? leadSum / items.length : 999;
 
-  // For normalization we need reference min/max across candidates, but as we score single vendor here,
-  // we'll compute a heuristic score combining raw metrics (not normalized against peers)
-  // The evaluateRFP endpoint sorts vendors by this score; because absolute scale matters less than relative,
-  // this simple aggregator works for demo.
-
-  // value components: higher better for qty & quality; lower better for price & lead
-  const qualityComponent = (avgQuality / 100) * 40; // up to 40
-  // quantity component: compare to requested total (sum rfp line_items req qty)
-  const rfpTotalQty = (rfp.line_items || []).reduce((s,i)=>s + (Number(i.required_qty) || 0), 0) || 1;
-  const qtyRatio = Math.min(1, totalQty / rfpTotalQty);
-  const quantityComponent = qtyRatio * 30; // up to 30
-  // lead component
-  const leadComponent = (avgLead <= 0 || avgLead > 3650) ? 0 : (Math.max(0, (1 - (avgLead / (rfp.parameters?.maxLeadDays || 90))) ) * 20);
-  // price component: if vendor provides totalPrice and rfp has expected price or maxPrice
+  // quantity target = sum of rfp required_qty
+  const targetQty = (rfp.line_items || []).reduce((s,i)=>s + (Number(i.required_qty)||0), 0) || 1;
+  const qtyScore = Math.min(1, totalQty / targetQty) * 30; // up to 30
+  const qualityComponent = (avgQuality/100)*40; // up to 40
+  const leadComponent = avgLead <= 0 ? 0 : Math.max(0, (1 - (avgLead / (rfp.delivery_days || 30))) * 20);
   let priceComponent = 0;
-  if (rfp.parameters?.max_price && totalPrice) {
-    priceComponent = (totalPrice <= rfp.parameters.max_price) ? 15 : Math.max(0, 15 * (1 - ((totalPrice - rfp.parameters.max_price) / rfp.parameters.max_price)));
+  if (rfp.budget?.amount && totalPrice) {
+    priceComponent = totalPrice <= rfp.budget.amount ? 10 : Math.max(0, 10 * (1 - ((totalPrice - rfp.budget.amount)/rfp.budget.amount)));
   } else {
-    // if no max price, reward lower absolute price modestly
-    priceComponent = totalPrice ? Math.max(0, 15 - (totalPrice / 100000)) : 5;
+    priceComponent = Math.max(0, 10 - (totalPrice/100000)); // small heuristic
   }
 
-  // sum
-  const rawScore = qualityComponent + quantityComponent + leadComponent + priceComponent;
-  // normalize to 0-100
-  const score = Math.round((rawScore / (40+30+20+15)) * 100);
-
+  const raw = qtyScore + qualityComponent + leadComponent + priceComponent;
+  const maxPossible = 30 + 40 + 20 + 10;
+  const score = Math.round((raw / maxPossible) * 100);
   return score;
 };

@@ -1,33 +1,36 @@
 import VendorResponse from "../models/VendorResponse.js";
-import Vendor from "../models/vendor.js";
+import Vendor from "../models/Vendor.js";
 import RFP from "../models/RFP.js";
 import { scoreVendor } from "../services/aiService.js";
 
-/**
- * Submit vendor response (body contains vendor_name, rfp_id, raw_text or items)
- */
+/* Submit vendor response */
 export const submitVendorResponse = async (req, res) => {
   try {
     const payload = req.body;
-
-    // If vendor included vendor_id, optionally ensure vendor exists
-    if (payload.vendor_id && !payload.vendor_name) {
-      const v = await Vendor.findById(payload.vendor_id);
-      if (v) payload.vendor_name = v.name;
+    // optionally create vendor if vendor info provided and vendor_id not present
+    if (payload.vendor && !payload.vendor_id) {
+      const v = await Vendor.create({ name: payload.vendor.name, email: payload.vendor.email, phone: payload.vendor.phone });
+      payload.vendor_id = v._id;
+      payload.vendor_name = v.name;
     }
 
-    const resp = await VendorResponse.create(payload);
-    res.status(201).json({ success: true, responseId: resp._id, response: resp });
+    const resp = await VendorResponse.create({
+      rfp_id: payload.rfp_id,
+      vendor_id: payload.vendor_id || null,
+      vendor_name: payload.vendor_name || (payload.vendor && payload.vendor.name) || "unknown",
+      items: payload.items || [],
+      overall_notes: payload.overall_notes || "",
+      raw_text: payload.raw_text || ""
+    });
+
+    res.status(201).json({ success: true, responseId: resp._id, resp });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 };
 
-/**
- * Evaluate & rank vendor responses for a given rfpId
- * body: { rfpId: "<id>" }
- */
+/* Evaluate all vendor responses for an RFP */
 export const evaluateRFP = async (req, res) => {
   try {
     const { rfpId } = req.body;
@@ -36,20 +39,16 @@ export const evaluateRFP = async (req, res) => {
     const rfp = await RFP.findById(rfpId).lean();
     if (!rfp) return res.status(404).json({ error: "RFP not found" });
 
-    const responses = await VendorResponse.find({ rfp_id: rfpId }).populate('vendor_id').lean();
+    const responses = await VendorResponse.find({ rfp_id: rfpId }).lean();
 
-    // score each using our scoring function
-    const scored = await Promise.all(
-      responses.map(async (r) => {
-        const s = await scoreVendor(rfp, r);
-        return { response: r, score: s };
-      })
-    );
+    const scored = await Promise.all(responses.map(async r => {
+      const score = await scoreVendor(rfp, r);
+      return { response: r, score };
+    }));
 
-    // Sort descending
-    scored.sort((a,b) => b.score - a.score);
+    scored.sort((a,b)=>b.score-a.score);
 
-    res.json({ success: true, ranking: scored });
+    return res.json({ success: true, ranking: scored });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

@@ -1,19 +1,22 @@
 import mongoose from "mongoose";
 
 const LineItemSchema = new mongoose.Schema({
-  item_id: { type: String },
-  name: { type: String },
-  required_qty: { type: Number },
-  quality_spec: { type: String },
-  notes: { type: String }
+  item_id: String,
+  name: String,
+  required_qty: Number,
+  unit: { type: String, default: "kg" },
+  quality_spec: String,
+  notes: String
 });
 
 const RFPSchema = new mongoose.Schema({
-  title: { type: String },
-  description: { type: String },
+  title: String,
+  description: String,
   created_by: { type: String, default: "procurement@company.local" },
   created_at: { type: Date, default: Date.now },
-  parameters: { type: Object, default: { priority_order: ["quality","quantity","lead_time","price"] } },
+  budget: { amount: Number, currency: { type: String, default: "INR" } },
+  delivery_days: Number,
+  payment_terms: String,
   line_items: [LineItemSchema],
   notes: String
 });

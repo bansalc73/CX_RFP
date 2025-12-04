@@ -4,6 +4,7 @@ const ResponseItemSchema = new mongoose.Schema({
   rfp_item_id: String,
   vendor_desc: String,
   qty_offered: Number,
+  unit: { type: String, default: "kg" },
   quality: String,
   lead_time_days: Number,
   unit_price: Number,
@@ -18,7 +19,6 @@ const VendorResponseSchema = new mongoose.Schema({
   currency: { type: String, default: "INR" },
   items: [ResponseItemSchema],
   overall_notes: String,
-  confidence: { type: Object, default: {} },
   raw_text: String
 });
 

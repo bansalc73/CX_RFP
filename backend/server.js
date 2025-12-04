@@ -6,7 +6,7 @@ import rfpRoutes from "./routes/rfpRoutes.js";
 import vendorRoutes from "./routes/vendorRoutes.js";
 
 dotenv.config();
-connectDB();
+await connectDB();
 
 const app = express();
 app.use(cors());
