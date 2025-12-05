@@ -46,7 +46,7 @@ export const evaluateRFP = async (req, res) => {
       return res.json({ success: true, ranking: [] });
     }
 
-    const ranked = await Promise.all(
+    const ranking = await Promise.all(
       responses.map(async (resp) => {
         const ai = await llmScoreVendor(rfp, resp);
         return {
@@ -58,9 +58,9 @@ export const evaluateRFP = async (req, res) => {
       })
     );
 
-    ranked.sort((a, b) => b.score - a.score);
+    ranking.sort((a, b) => b.score - a.score);
 
-    return res.json({ success: true, ranking: ranked });
+    return res.json({ success: true, ranking });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: err.message });
