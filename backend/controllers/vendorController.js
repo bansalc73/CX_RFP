@@ -31,6 +31,7 @@ export const submitVendorResponse = async (req, res) => {
 };
 
 /* Evaluate all vendor responses for an RFP */
+
 export const evaluateRFP = async (req, res) => {
   try {
     const { rfpId } = req.body;
@@ -40,21 +41,19 @@ export const evaluateRFP = async (req, res) => {
     if (!rfp) return res.status(404).json({ error: "RFP not found" });
 
     const responses = await VendorResponse.find({ rfp_id: rfpId }).lean();
-    if (!responses.length) return res.json({ success: true, ranking: [] });
+
+    if (!responses.length) {
+      return res.json({ success: true, ranking: [] });
+    }
 
     const ranked = await Promise.all(
-      responses.map(async (vendorResp) => {
-        let scoring;
-        try {
-          scoring = await llmScoreVendor(rfp, vendorResp);
-        } catch (err) {
-          scoring = { score: 0, reasons: ["AI scoring failed"] };
-        }
+      responses.map(async (resp) => {
+        const ai = await llmScoreVendor(rfp, resp);
         return {
-          vendorName: vendorResp.vendor_name,
-          items: vendorResp.items,
-          score: scoring.score,
-          reasons: scoring.reasons
+          vendorName: resp.vendor_name,
+          items: resp.items,
+          score: ai.score,
+          reasons: ai.reasons
         };
       })
     );
@@ -63,6 +62,7 @@ export const evaluateRFP = async (req, res) => {
 
     return res.json({ success: true, ranking: ranked });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    return res.status(500).json({ error: err.message });
   }
 };
